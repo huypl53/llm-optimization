@@ -1,3 +1,4 @@
+import argparse
 import base64
 import io
 import json
@@ -25,17 +26,49 @@ class QuantizeConfig:
     seed: int = 42
 
 
-def build_default_config() -> QuantizeConfig:
+def get_dataset_configs() -> dict[str, dict[str, str | None]]:
+    return {
+        "neuralmagic_calibration": {
+            "dataset_id": "neuralmagic/calibration",
+            "dataset_name": "LLM",
+            "dataset_split": "train",
+        },
+        "mmstar": {
+            "dataset_id": "Lin-Chen/MMStar",
+            "dataset_name": "LLM",
+            "dataset_split": "val",
+        },
+    }
+
+
+def build_default_config(dataset_key: str) -> QuantizeConfig:
     model_id = "Qwen/Qwen3-VL-4B-Instruct"
+    dataset_configs = get_dataset_configs()
+    if dataset_key not in dataset_configs:
+        raise ValueError(
+            f"Unknown dataset_key '{dataset_key}'. Available: {', '.join(dataset_configs)}"
+        )
+    dataset_cfg = dataset_configs[dataset_key]
     return QuantizeConfig(
         model_id=model_id,
-        save_dir=f"{model_id.split('/')[-1]}-AWQ-INT4-512-norm",
-        dataset_id="Lin-Chen/MMStar",
-        dataset_name=None,
-        dataset_split="val",
+        save_dir=f"{model_id.split('/')[-1]}-AWQ-INT4-512",
+        dataset_id=dataset_cfg["dataset_id"],
+        dataset_name=dataset_cfg["dataset_name"],
+        dataset_split=dataset_cfg["dataset_split"],
         num_calibration_samples=64,
-        max_sequence_length=4096,
+        max_sequence_length=16384,
     )
+
+
+def parse_args() -> argparse.Namespace:
+    dataset_keys = ", ".join(get_dataset_configs())
+    parser = argparse.ArgumentParser(description="Quantize Qwen3-VL with AWQ.")
+    parser.add_argument(
+        "--dataset-key",
+        default="neuralmagic_calibration",
+        help=f"Dataset key to use. Options: {dataset_keys}",
+    )
+    return parser.parse_args()
 
 
 def convert_image_mode(image: Image.Image, mode: str) -> Image.Image:
@@ -148,7 +181,11 @@ def build_preprocess_fn(processor: AutoProcessor, max_sequence_length: int):
         )
 
         for key, value in inputs.items():
-            if isinstance(value, torch.Tensor) and value.dim() > 0 and value.size(0) == 1:
+            if (
+                isinstance(value, torch.Tensor)
+                and value.dim() > 0
+                and value.size(0) == 1
+            ):
                 inputs[key] = value.squeeze(0)
 
         return inputs
@@ -284,7 +321,8 @@ def save_and_postprocess(model, processor, save_dir: str) -> None:
 
 
 def main() -> None:
-    cfg = build_default_config()
+    args = parse_args()
+    cfg = build_default_config(args.dataset_key)
     model, processor = load_model_and_processor(cfg)
     dataset = load_calibration_dataset(cfg)
     dataset = prepare_dataset(dataset, processor, cfg)
