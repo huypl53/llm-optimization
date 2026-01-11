@@ -30,11 +30,30 @@ def maybe_augment_image(image_pil: Image.Image, occurrence_idx: int) -> Image.Im
     return img
 
 
-def build_prompt_text(prompt: str, system_prompt: str) -> str:
-    user_block = prompt if "<image>" in prompt else f"<image>\n{prompt}"
+def build_prompt_text(prompt: str, system_prompt: str, mm_placeholder: str) -> str:
+    user_block = (
+        prompt
+        if mm_placeholder in prompt
+        else f"{mm_placeholder}\n{prompt}"
+    )
     if system_prompt:
         return f"{system_prompt}\nUSER: {user_block}\nASSISTANT:"
     return f"USER: {user_block}\nASSISTANT:"
+
+
+def build_chat_prompt(
+    image_pil: Image.Image, prompt: str, system_prompt: str
+) -> list[dict]:
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_pil", "image_pil": image_pil},
+                {"type": "text", "text": prompt},
+            ],
+        },
+    ]
 
 
 async def generate_one(
@@ -99,6 +118,17 @@ async def main() -> None:
         "--max-images",
         type=int,
         help="Maximum number of images to process from the directory.",
+    )
+    parser.add_argument(
+        "--mm-placeholder",
+        default="<image>",
+        help="Image placeholder token required by the model's prompt format.",
+    )
+    parser.add_argument(
+        "--prompt-format",
+        choices=("raw", "chat"),
+        default="raw",
+        help="Use raw prompt text with multimodal placeholder. Chat is unsupported.",
     )
     parser.add_argument(
         "--max-tokens", type=int, help="Maximum tokens to generate.", default=256
@@ -173,7 +203,14 @@ async def main() -> None:
                 seen_counts[image_path] += 1
                 image_pil = maybe_augment_image(base_image, occurrence_idx)
 
-                full_prompt = build_prompt_text(prompt_text, args.system_prompt)
+                if args.prompt_format == "chat":
+                    raise ValueError(
+                        "AsyncLLM.generate does not accept chat message lists. "
+                        "Use --prompt-format raw and set --mm-placeholder."
+                    )
+                full_prompt = build_prompt_text(
+                    prompt_text, args.system_prompt, args.mm_placeholder
+                )
                 prompt = {
                     "prompt": full_prompt,
                     "multi_modal_data": {"image": image_pil},
