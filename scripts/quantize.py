@@ -10,7 +10,7 @@ from datasets import load_dataset
 from llmcompressor import oneshot
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
-from .awq_recipes import build_awq_recipe_for_model
+from .awq_recipes import build_recipe_for_model
 from .quantize_datasets import get_preprocess_fn
 
 
@@ -189,7 +189,7 @@ def main() -> None:
     model, processor = load_model_and_processor(cfg)
     dataset = load_calibration_dataset(cfg)
     dataset = prepare_dataset(dataset, processor, cfg)
-    recipe = build_awq_recipe_for_model(cfg.model_id)
+    recipe = build_recipe_for_model(cfg.model_id)
     run_quantization(model, processor, recipe, dataset, cfg)
     save_and_postprocess(model, processor, cfg.save_dir)
 

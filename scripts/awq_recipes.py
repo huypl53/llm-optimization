@@ -1,8 +1,10 @@
 from compressed_tensors.quantization import QuantizationScheme
+from llmcompressor.modifiers import Modifier
 from llmcompressor.modifiers.awq import AWQMapping, AWQModifier
+from llmcompressor.modifiers.quantization import GPTQModifier
 
 
-def build_qwen3_vl_awq_recipe() -> AWQModifier:
+def build_qwen3_vl_awq_recipe() -> Modifier:
     return AWQModifier(
         mappings=[
             AWQMapping(
@@ -27,21 +29,6 @@ def build_qwen3_vl_awq_recipe() -> AWQModifier:
             "lm_head",
         ],
         duo_scaling=True,
-        # config_groups={
-        #     "group_0": {
-        #         "targets": ["Linear"],
-        #         "weights": {
-        #             "num_bits": 4,
-        #             "type": "int",
-        #             "symmetric": True,
-        #             "group_size": 32,
-        #             "strategy": "group",
-        #             "dynamic": False,
-        #             "actorder": None,
-        #             "observer": "mse",
-        #         },
-        #     }
-        # },
         config_groups=dict(
             group_0=QuantizationScheme.model_validate(
                 {
@@ -62,13 +49,21 @@ def build_qwen3_vl_awq_recipe() -> AWQModifier:
     )
 
 
+def build_internvl_35_awq_recipe() -> Modifier:
+    return GPTQModifier(
+        targets="Linear",
+        scheme="FP8",
+        ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+    )
+
+
 _RECIPE_BUILDERS = {
-    "opengvlab/internvl3_5-4b-hf": build_qwen3_vl_awq_recipe,
+    "opengvlab/internvl3_5-4b-hf": build_internvl_35_awq_recipe,
     "qwen/qwen3-vl": build_qwen3_vl_awq_recipe,
 }
 
 
-def build_awq_recipe_for_model(model_id: str) -> AWQModifier:
+def build_recipe_for_model(model_id: str) -> Modifier:
     normalized = model_id.lower()
     for prefix, builder in _RECIPE_BUILDERS.items():
         if normalized.startswith(prefix):

@@ -39,7 +39,7 @@ python scripts/demo_model.py /path/to/images \
 Use the bundled prompt file instead of an inline prompt:
 
 ```bash
-python scripts/demo_model.py /path/to/images \
+python -m scripts.demo_model /path/to/images \
   --model llava-hf/llava-1.5-7b-hf \
   --prompt-file scripts/prompt.txt \
   --output outputs.csv
