@@ -8,9 +8,10 @@ import torch
 import yaml
 from datasets import load_dataset
 from llmcompressor import oneshot
-from llmcompressor.modifiers.awq import AWQMapping, AWQModifier
-from quantize_datasets import get_preprocess_fn
 from transformers import AutoModelForImageTextToText, AutoProcessor
+
+from .awq_recipes import build_awq_recipe_for_model
+from .quantize_datasets import get_preprocess_fn
 
 
 @dataclass(frozen=True)
@@ -31,11 +32,6 @@ def parse_args() -> argparse.Namespace:
         "--config",
         required=True,
         help="Path to the quantization config YAML.",
-    )
-    parser.add_argument(
-        "--recipe",
-        required=True,
-        help="Path to the AWQ recipe YAML.",
     )
     return parser.parse_args()
 
@@ -113,49 +109,6 @@ def data_collator(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
             stacked = stacked.to(torch.bfloat16)
         res[key] = stacked
     return res
-
-
-def load_recipe(path: str) -> AWQModifier:
-    recipe_path = Path(path)
-    with recipe_path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError("Recipe YAML must be a mapping.")
-    if "AWQModifier" in data and isinstance(data["AWQModifier"], dict):
-        data = data["AWQModifier"]
-
-    mappings_cfg = data.get("mappings") or []
-    mappings: list[AWQMapping] = []
-    for entry in mappings_cfg:
-        if not isinstance(entry, dict):
-            raise ValueError("Each mapping entry must be a mapping.")
-        smooth_layer = entry.get("smooth_layer")
-        balance_layers = entry.get("balance_layers")
-        if not isinstance(smooth_layer, str):
-            raise ValueError("Mapping 'smooth_layer' must be a string.")
-        if not isinstance(balance_layers, list) or not all(
-            isinstance(item, str) for item in balance_layers
-        ):
-            raise ValueError("Mapping 'balance_layers' must be a list of strings.")
-        mappings.append(AWQMapping(smooth_layer, balance_layers))
-
-    ignore = data.get("ignore") or []
-    if not isinstance(ignore, list) or not all(
-        isinstance(item, str) for item in ignore
-    ):
-        raise ValueError("Recipe 'ignore' must be a list of strings.")
-
-    config_groups = data.get("config_groups") or {}
-    if not isinstance(config_groups, dict):
-        raise ValueError("Recipe 'config_groups' must be a mapping if provided.")
-
-    kwargs: dict[str, Any] = {"mappings": mappings, "ignore": ignore}
-    if "duo_scaling" in data:
-        kwargs["duo_scaling"] = bool(data["duo_scaling"])
-    if config_groups:
-        kwargs["config_groups"] = config_groups
-
-    return AWQModifier(**kwargs)
 
 
 def load_model_and_processor(cfg: QuantizeConfig):
@@ -236,8 +189,7 @@ def main() -> None:
     model, processor = load_model_and_processor(cfg)
     dataset = load_calibration_dataset(cfg)
     dataset = prepare_dataset(dataset, processor, cfg)
-    # recipe = load_recipe(args.recipe)
-    recipe = args.recipe
+    recipe = build_awq_recipe_for_model(cfg.model_id)
     run_quantization(model, processor, recipe, dataset, cfg)
     save_and_postprocess(model, processor, cfg.save_dir)
 

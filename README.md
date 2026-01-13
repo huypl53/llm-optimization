@@ -1,12 +1,13 @@
 # Quantization (AWQ)
 
-This project runs AWQ quantization for Qwen3-VL using `llmcompressor` and a YAML-driven configuration.
+This project runs AWQ quantization for Qwen3-VL using `llmcompressor` and a YAML-driven config.
 
 ## What changed
 
-- Quantization now reads **two YAML files**: a quantize config and an AWQ recipe.
+- Quantization reads a **single YAML config** for dataset/model settings.
+- AWQ recipes are defined in Python and selected by model in `scripts/awq_recipes.py`.
 - Dataset-specific preprocessing lives in a separate module.
-- Sample YAMLs are provided under `configs/`.
+- A sample config is provided under `configs/`.
 
 ## Requirements
 
@@ -15,10 +16,10 @@ This project runs AWQ quantization for Qwen3-VL using `llmcompressor` and a YAML
 
 ## Quick start
 
-Use the sample configs:
+Use the sample config:
 
 ```bash
-python scripts/quantize.py --config configs/quantize.yaml --recipe configs/recipe.yaml
+python scripts/quantize.py --config configs/quantize.yaml
 ```
 
 ## Quantize config YAML
@@ -48,33 +49,10 @@ max_sequence_length: 16384
 seed: 42
 ```
 
-## AWQ recipe YAML
+## AWQ recipe (Python)
 
-The recipe is loaded from a YAML file. It accepts an `AWQModifier` root (recommended) or a raw mapping.
-
-Example:
-
-```yaml
-AWQModifier:
-  mappings:
-    - smooth_layer: "re:.*self_attn_layer_norm"
-      balance_layers: ["re:.*q_proj", "re:.*k_proj", "re:.*v_proj"]
-    - smooth_layer: "re:.*final_layer_norm"
-      balance_layers: ["re:.*fc1"]
-  ignore: ["lm_head"]
-  config_groups:
-    group_0:
-      targets:
-        - "Linear"
-      input_activations: null
-      output_activations: null
-      weights:
-        num_bits: 4
-        type: int
-        symmetric: false
-        strategy: group
-        group_size: 128
-```
+Recipes are defined in `scripts/awq_recipes.py` and picked based on `model_id`.
+To add a new model recipe, implement a builder and register it in `_RECIPE_BUILDERS`.
 
 ## Dataset preprocessing
 
