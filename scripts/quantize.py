@@ -1,16 +1,15 @@
 import argparse
-import base64
-import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import torch
+import yaml
 from datasets import load_dataset
 from llmcompressor import oneshot
 from llmcompressor.modifiers.awq import AWQMapping, AWQModifier
-from PIL import Image
+from quantize_datasets import get_preprocess_fn
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 
@@ -26,99 +25,19 @@ class QuantizeConfig:
     seed: int = 42
 
 
-def get_dataset_configs() -> dict[str, dict[str, str | None]]:
-    return {
-        "neuralmagic_calibration": {
-            "dataset_id": "neuralmagic/calibration",
-            "dataset_name": "LLM",
-            "dataset_split": "train",
-        },
-        "mmstar": {
-            "dataset_id": "Lin-Chen/MMStar",
-            "dataset_name": "LLM",
-            "dataset_split": "val",
-        },
-    }
-
-
-def build_default_config(dataset_key: str) -> QuantizeConfig:
-    model_id = "Qwen/Qwen3-VL-4B-Instruct"
-    dataset_configs = get_dataset_configs()
-    if dataset_key not in dataset_configs:
-        raise ValueError(
-            f"Unknown dataset_key '{dataset_key}'. Available: {', '.join(dataset_configs)}"
-        )
-    dataset_cfg = dataset_configs[dataset_key]
-    return QuantizeConfig(
-        model_id=model_id,
-        save_dir=f"{model_id.split('/')[-1]}-AWQ-INT4-512",
-        dataset_id=dataset_cfg["dataset_id"],
-        dataset_name=dataset_cfg["dataset_name"],
-        dataset_split=dataset_cfg["dataset_split"],
-        num_calibration_samples=64,
-        max_sequence_length=16384,
-    )
-
-
 def parse_args() -> argparse.Namespace:
-    dataset_keys = ", ".join(get_dataset_configs())
     parser = argparse.ArgumentParser(description="Quantize Qwen3-VL with AWQ.")
     parser.add_argument(
-        "--dataset-key",
-        default="neuralmagic_calibration",
-        help=f"Dataset key to use. Options: {dataset_keys}",
+        "--config",
+        required=True,
+        help="Path to the quantization config YAML.",
+    )
+    parser.add_argument(
+        "--recipe",
+        required=True,
+        help="Path to the AWQ recipe YAML.",
     )
     return parser.parse_args()
-
-
-def convert_image_mode(image: Image.Image, mode: str) -> Image.Image:
-    return image if image.mode == mode else image.convert(mode)
-
-
-def process_image(image: Any) -> Mapping[str, Any]:
-    if isinstance(image, dict) and "bytes" in image:
-        image = Image.open(io.BytesIO(image["bytes"]))
-    if isinstance(image, Image.Image):
-        image = convert_image_mode(image, "RGB")
-        with io.BytesIO() as image_data:
-            image.save(image_data, format="JPEG")
-            image_base64 = base64.b64encode(image_data.getvalue()).decode("utf-8")
-        return {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
-        }
-    if isinstance(image, str):
-        image_url = (
-            image
-            if image.startswith(("http://", "https://", "file://"))
-            else f"file://{image}"
-        )
-        return {"type": "image_url", "image_url": {"url": image_url}}
-
-    try:
-        import numpy as np
-    except Exception:
-        np = None
-
-    if isinstance(image, torch.Tensor):
-        image = image.detach().cpu().numpy()
-    if isinstance(image, (list, tuple)):
-        if np is None:
-            raise ValueError("numpy is required to process array images")
-        image = np.array(image)
-    if np is not None and isinstance(image, np.ndarray):
-        if image.dtype != np.uint8:
-            max_val = float(image.max()) if image.size else 0.0
-            if max_val <= 1.0:
-                image = (image * 255.0).clip(0, 255).astype("uint8")
-            else:
-                image = image.clip(0, 255).astype("uint8")
-        image = Image.fromarray(image)
-        return process_image(image)
-
-    raise ValueError(
-        "Invalid image input. Must be PIL.Image.Image, str, dict with bytes, or array."
-    )
 
 
 def remove_keys_nested(obj: Any, keys: set[str]) -> bool:
@@ -138,59 +57,48 @@ def remove_keys_nested(obj: Any, keys: set[str]) -> bool:
     return removed
 
 
-def build_preprocess_fn(processor: AutoProcessor, max_sequence_length: int):
-    def preprocess_function(example: dict[str, Any]) -> dict[str, torch.Tensor]:
-        if "messages" in example:
-            messages = [
-                {
-                    "role": message["role"],
-                    "content": [{"type": "text", "text": message["content"]}],
-                }
-                for message in example["messages"]
-            ]
-        elif "image" in example and "question" in example:
-            if example["image"] is None:
-                raise ValueError(
-                    "Image is required for image-text calibration samples."
-                )
-            user_content = [
-                process_image(example["image"]),
-                {"type": "text", "text": example["question"]},
-            ]
-            messages = [{"role": "user", "content": user_content}]
-            if "answer" in example and example["answer"] is not None:
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": str(example["answer"])}],
-                    }
-                )
-        else:
-            raise ValueError("Unsupported dataset schema for calibration.")
+def load_quantize_config(path: str) -> QuantizeConfig:
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError("Quantization config must be a YAML mapping.")
 
-        inputs = processor.apply_chat_template(
-            messages,
-            return_tensors="pt",
-            padding=False,
-            truncation=True,
-            max_length=max_sequence_length,
-            tokenize=True,
-            add_special_tokens=False,
-            return_dict=True,
-            add_generation_prompt=False,
-        )
+    def require(key: str, expected_type: type) -> Any:
+        if key not in data:
+            raise ValueError(f"Missing required config field: {key}")
+        value = data[key]
+        if not isinstance(value, expected_type):
+            raise ValueError(f"Config field '{key}' must be {expected_type.__name__}.")
+        return value
 
-        for key, value in inputs.items():
-            if (
-                isinstance(value, torch.Tensor)
-                and value.dim() > 0
-                and value.size(0) == 1
-            ):
-                inputs[key] = value.squeeze(0)
+    model_id = require("model_id", str)
+    dataset_id = require("dataset_id", str)
+    dataset_split = require("dataset_split", str)
+    num_calibration_samples = require("num_calibration_samples", int)
+    max_sequence_length = require("max_sequence_length", int)
+    save_dir = data.get("save_dir") or f"{model_id.split('/')[-1]}-AWQ-INT4-512"
+    if not isinstance(save_dir, str):
+        raise ValueError("Config field 'save_dir' must be str if provided.")
 
-        return inputs
+    dataset_name = data.get("dataset_name")
+    if dataset_name is not None and not isinstance(dataset_name, str):
+        raise ValueError("Config field 'dataset_name' must be str or null.")
 
-    return preprocess_function
+    seed = data.get("seed", 42)
+    if not isinstance(seed, int):
+        raise ValueError("Config field 'seed' must be int if provided.")
+
+    return QuantizeConfig(
+        model_id=model_id,
+        save_dir=save_dir,
+        dataset_id=dataset_id,
+        dataset_name=dataset_name,
+        dataset_split=dataset_split,
+        num_calibration_samples=num_calibration_samples,
+        max_sequence_length=max_sequence_length,
+        seed=seed,
+    )
 
 
 def data_collator(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
@@ -207,47 +115,47 @@ def data_collator(batch: list[dict[str, Any]]) -> dict[str, torch.Tensor]:
     return res
 
 
-def build_recipe() -> AWQModifier:
-    return AWQModifier(
-        mappings=[
-            AWQMapping(
-                "re:.*input_layernorm$",
-                ["re:.*q_proj$", "re:.*k_proj$", "re:.*v_proj$"],
-            ),
-            AWQMapping(
-                "re:.*post_attention_layernorm$",
-                ["re:.*gate_proj$", "re:.*up_proj$"],
-            ),
-            AWQMapping(
-                "re:.*up_proj$",
-                ["re:.*down_proj$"],
-            ),
-        ],
-        ignore=[
-            "re:.*embed_tokens",
-            "re:.*mlp[.]gate$",
-            "re:model[.]visual.*",
-            "re:visual.*",
-            "re:.*visual.*",
-            "lm_head",
-        ],
-        duo_scaling=True,
-        config_groups={
-            "group_0": {
-                "targets": ["Linear"],
-                "weights": {
-                    "num_bits": 4,
-                    "type": "int",
-                    "symmetric": True,
-                    "group_size": 32,
-                    "strategy": "group",
-                    "dynamic": False,
-                    "actorder": None,
-                    "observer": "mse",
-                },
-            }
-        },
-    )
+def load_recipe(path: str) -> AWQModifier:
+    recipe_path = Path(path)
+    with recipe_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError("Recipe YAML must be a mapping.")
+    if "AWQModifier" in data and isinstance(data["AWQModifier"], dict):
+        data = data["AWQModifier"]
+
+    mappings_cfg = data.get("mappings") or []
+    mappings: list[AWQMapping] = []
+    for entry in mappings_cfg:
+        if not isinstance(entry, dict):
+            raise ValueError("Each mapping entry must be a mapping.")
+        smooth_layer = entry.get("smooth_layer")
+        balance_layers = entry.get("balance_layers")
+        if not isinstance(smooth_layer, str):
+            raise ValueError("Mapping 'smooth_layer' must be a string.")
+        if not isinstance(balance_layers, list) or not all(
+            isinstance(item, str) for item in balance_layers
+        ):
+            raise ValueError("Mapping 'balance_layers' must be a list of strings.")
+        mappings.append(AWQMapping(smooth_layer, balance_layers))
+
+    ignore = data.get("ignore") or []
+    if not isinstance(ignore, list) or not all(
+        isinstance(item, str) for item in ignore
+    ):
+        raise ValueError("Recipe 'ignore' must be a list of strings.")
+
+    config_groups = data.get("config_groups") or {}
+    if not isinstance(config_groups, dict):
+        raise ValueError("Recipe 'config_groups' must be a mapping if provided.")
+
+    kwargs: dict[str, Any] = {"mappings": mappings, "ignore": ignore}
+    if "duo_scaling" in data:
+        kwargs["duo_scaling"] = bool(data["duo_scaling"])
+    if config_groups:
+        kwargs["config_groups"] = config_groups
+
+    return AWQModifier(**kwargs)
 
 
 def load_model_and_processor(cfg: QuantizeConfig):
@@ -270,7 +178,9 @@ def load_calibration_dataset(cfg: QuantizeConfig):
 
 
 def prepare_dataset(ds, processor: AutoProcessor, cfg: QuantizeConfig):
-    preprocess_fn = build_preprocess_fn(processor, cfg.max_sequence_length)
+    preprocess_fn = get_preprocess_fn(
+        cfg.dataset_id, processor, cfg.max_sequence_length
+    )
     return ds.map(preprocess_fn, batched=False, remove_columns=ds.column_names)
 
 
@@ -322,11 +232,12 @@ def save_and_postprocess(model, processor, save_dir: str) -> None:
 
 def main() -> None:
     args = parse_args()
-    cfg = build_default_config(args.dataset_key)
+    cfg = load_quantize_config(args.config)
     model, processor = load_model_and_processor(cfg)
     dataset = load_calibration_dataset(cfg)
     dataset = prepare_dataset(dataset, processor, cfg)
-    recipe = build_recipe()
+    # recipe = load_recipe(args.recipe)
+    recipe = args.recipe
     run_quantization(model, processor, recipe, dataset, cfg)
     save_and_postprocess(model, processor, cfg.save_dir)
 
