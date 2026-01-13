@@ -63,6 +63,7 @@ def build_qwen3_vl_awq_recipe() -> AWQModifier:
 
 
 _RECIPE_BUILDERS = {
+    "opengvlab/internvl3_5-4b-hf": build_qwen3_vl_awq_recipe,
     "qwen/qwen3-vl": build_qwen3_vl_awq_recipe,
 }
 

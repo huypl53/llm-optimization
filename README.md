@@ -22,6 +22,34 @@ Use the sample config:
 python scripts/quantize.py --config configs/quantize.yaml
 ```
 
+## Demo model (vLLM)
+
+Use `scripts/demo_model.py` to run a vLLM chat over all images in a directory and
+write results to a CSV file.
+
+Example:
+
+```bash
+python scripts/demo_model.py /path/to/images \
+  --model llava-hf/llava-1.5-7b-hf \
+  --prompt "What's in this image?" \
+  --output outputs.csv
+```
+
+Use the bundled prompt file instead of an inline prompt:
+
+```bash
+python scripts/demo_model.py /path/to/images \
+  --model llava-hf/llava-1.5-7b-hf \
+  --prompt-file scripts/prompt.txt \
+  --output outputs.csv
+```
+
+Notes:
+- Supported image types: jpg, jpeg, png, webp, bmp, gif.
+- `--prompt-file` overrides `--prompt`.
+- `--max-images` can be used to cap or repeat images to a fixed count.
+
 ## Quantize config YAML
 
 Required fields:
