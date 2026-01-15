@@ -1,0 +1,44 @@
+# vLLM Helm Chart values for serving quantized models
+# Customize these values based on your requirements
+
+servingEngineSpec:
+  strategy:
+    type: Recreate
+  runtimeClassName: ""
+
+  modelSpec:
+    # Model configuration
+    - name: "qwen2_4B_quan"
+      repository: "vllm/vllm-openai"
+      tag: "latest"
+      # Change modelURL to your HuggingFace model
+      modelURL: "huypl53/Qwen3-VL-4B-Instruct-AWQ-INT4"
+      replicaCount: 3
+
+      # Resource requests
+      requestCPU: 6
+      requestMemory: "8Gi"
+      requestGPU: 1
+
+      # Resource limits
+      limitCPU: 8
+      limitMemory: "16Gi"
+
+      # vLLM specific configuration
+      vllmConfig:
+        maxModelLen: 16384
+        gpuMemoryUtilization: 0.25
+        extraArgs:
+          - "--disable-log-requests"
+
+# Router configuration (optional)
+routerSpec:
+  replicaCount: 1
+  requestCPU: "1"
+  requestMemory: "2Gi"
+  limitCPU: "2"
+  limitMemory: "4Gi"
+
+# Monitoring configuration (optional)
+monitoringSpec:
+  enabled: false
