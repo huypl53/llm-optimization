@@ -1,0 +1,100 @@
+# vLLM Helm Chart values for KubeRay deployment with pipeline parallelism
+# This configuration uses Ray cluster for distributed inference
+
+servingEngineSpec:
+  strategy:
+    type: Recreate
+  runtimeClassName: ""
+
+  modelSpec:
+    # Model configuration with KubeRay
+    - name: "qwen3_4B_quan"
+      repository: "vllm/vllm-openai"
+      tag: "latest"
+      # Change modelURL to your HuggingFace model
+      modelURL: "huypl53/Qwen3-VL-4B-Instruct-AWQ-INT4"
+
+      # Ray cluster configuration
+      # replicaCount = number of Ray worker pods
+      # Total Ray nodes = replicaCount (workers) + 1 (head)
+      replicaCount: 1
+
+      # Resource requests per Ray worker pod
+      requestCPU: 4
+      requestMemory: "16Gi"
+      requestGPU: 1  # GPUs per worker pod
+
+      # vLLM Ray-specific configuration
+      vllmConfig:
+        # tensorParallelSize = GPUs per Ray node (must match requestGPU)
+        tensorParallelSize: 1
+        # pipelineParallelSize = Total Ray nodes (replicaCount + 1)
+        pipelineParallelSize: 2
+
+      # Shared memory size for inter-process communication
+      shmSize: "16Gi"
+
+      # HuggingFace token (required for gated models)
+      # Set HF_TOKEN environment variable or replace below
+      hf_token: "${HF_TOKEN:-}"
+
+      # Ray cluster specification
+      raySpec:
+        headNode:
+          requestCPU: 4
+          requestMemory: "16Gi"
+          requestGPU: 1  # Head node must also have GPU
+
+# Router configuration
+routerSpec:
+  replicaCount: 1
+  requestCPU: "1"
+  requestMemory: "2Gi"
+  limitCPU: "2"
+  limitMemory: "4Gi"
+
+# GPU operator configuration
+gpuOperatorSpec:
+  enabled: true
+
+# Monitoring (optional)
+monitoringSpec:
+  enabled: false
+
+# ============================================
+# Parallelism Configuration Guide
+# ============================================
+#
+# Total GPUs = pipelineParallelSize × tensorParallelSize
+#
+# Examples:
+#
+# 1. Single GPU setup:
+#    replicaCount: 0 (no workers, head only)
+#    requestGPU: 1
+#    tensorParallelSize: 1
+#    pipelineParallelSize: 1
+#    Total: 1 GPU
+#
+# 2. Single node with 2 GPUs (tensor parallelism):
+#    replicaCount: 0 (no workers, head only)
+#    requestGPU: 2
+#    tensorParallelSize: 2
+#    pipelineParallelSize: 1
+#    Total: 2 GPUs
+#
+# 3. Two nodes with 1 GPU each (pipeline parallelism):
+#    replicaCount: 1 (1 worker)
+#    requestGPU: 1
+#    tensorParallelSize: 1
+#    pipelineParallelSize: 2 (head + 1 worker)
+#    Total: 2 GPUs
+#
+# 4. Two nodes with 2 GPUs each (both parallelisms):
+#    replicaCount: 1 (1 worker)
+#    requestGPU: 2
+#    tensorParallelSize: 2
+#    pipelineParallelSize: 2 (head + 1 worker)
+#    Total: 4 GPUs
+#
+# ============================================
